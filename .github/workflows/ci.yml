@@ -50,11 +50,11 @@ jobs:
               nibabel==5.2.1 \
               scikit-image==0.22.0 \
               lifelines==0.29.0 \
-              scikit-survival==0.22.2 \
+              "scikit-survival==0.22.2" \
+              "scikit-learn>=1.3.0,<1.4" \
               numpy==1.26.4 \
               scipy==1.13.0 \
               pandas==2.2.1 \
-              scikit-learn==1.4.2 \
               pyyaml==6.0.1 \
               pytest==7.4.4 \
               pytest-cov==4.1.0
