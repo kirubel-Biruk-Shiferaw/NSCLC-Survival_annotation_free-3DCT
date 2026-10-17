@@ -10,13 +10,19 @@ using Cox partial likelihood (Harrell's C-index evaluation).
 
 ---
 
-## ⚠️ COLIPRI Pretraining Caveat
+## COLIPRI Pretraining Data
 
 Experiments E16a/b and E17a/b/c/d use `microsoft/colipri` embeddings.
-COLIPRI may have been pretrained on TCIA data, potentially including the
-Lung1 cohort used here.  **The C-index improvements from COLIPRI experiments
-cannot be safely attributed to superior feature extraction** and may reflect
-data leakage.  See [docs/model_card.md](docs/model_card.md) for details.
+COLIPRI (Wald et al., ECCV 2026) is pretrained on **CT-RATE** (25,692 chest
+CT volumes paired with radiology reports) and **NLST** (~72,000 image-only
+chest CT scans) — see the paper's dataset table. **Neither corpus includes the
+NSCLC-Radiomics / Lung1 cohort used here**: Lung1 is from MAASTRO Clinic (TCIA),
+CT-RATE is from Istanbul Medipol University Hospital, and NLST is the US
+National Lung Screening Trial. The Lung1 cohort is therefore not part of
+COLIPRI's pretraining data, so the COLIPRI results are not affected by that
+form of train/test leakage. As with every single-cohort study, external
+validation on an independent dataset is still required before clinical claims.
+See [docs/model_card.md](docs/model_card.md).
 
 ---
 
