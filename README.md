@@ -1,6 +1,6 @@
 # NSCLC Survival Prediction — Reproducible Deep Learning Pipeline
 
-[![CI](https://github.com/birukkirubel/nsclc-survival/actions/workflows/ci.yml/badge.svg)](https://github.com/birukkirubel/nsclc-survival/actions)
+[![CI](https://github.com/kirubel-Biruk-Shiferaw/NSCLC-Survival_annotation_free-3DCT/actions/workflows/ci.yml/badge.svg)](https://github.com/kirubel-Biruk-Shiferaw/NSCLC-Survival_annotation_free-3DCT/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 Reproducible code for 17 deep-learning survival analysis experiments (E1–E17d)
@@ -73,8 +73,8 @@ docs/
 ### Step 1 — Clone and set up the environment
 
 ```bash
-git clone https://github.com/birukkirubel/nsclc-survival.git
-cd nsclc-survival
+git clone https://github.com/kirubel-Biruk-Shiferaw/NSCLC-Survival_annotation_free-3DCT.git
+cd NSCLC-Survival_annotation_free-3DCT
 
 # Option A: conda (recommended for GPU support)
 conda env create -f environment.yml
@@ -273,14 +273,17 @@ python scripts/interpret.py --config configs/default.yaml --exp E3 --fold 1
 
 ## Using Pre-trained Checkpoints
 
-Skip Steps 3–7 by downloading the trained checkpoints:
+> **Note:** pre-trained checkpoints are not yet published. Until they are,
+> reproduce results by retraining from scratch (Steps 3–8). Once uploaded,
+> this section will give the exact Hugging Face repository; the snippet below
+> shows the intended usage with a placeholder repository id.
 
 ```bash
 pip install huggingface_hub
 python - <<'EOF'
 from huggingface_hub import snapshot_download
 snapshot_download(
-    repo_id="birukkirubel/nsclc-survival-checkpoints",
+    repo_id="<your-hf-username>/nsclc-survival-checkpoints",  # placeholder — not yet published
     local_dir="outputs/checkpoints",
     repo_type="model",
 )
@@ -289,60 +292,70 @@ EOF
 
 Then go directly to Step 8 (evaluate.py).
 
-> Checkpoints are ~2.1 GB total (all experiments, all folds).
+> Checkpoints are expected to be ~2.1 GB total (all experiments, all folds).
 
 ---
 
-## Key Code Fixes
+## Implementation Notes
 
-This implementation corrects 6 critical/major bugs from the original notebook:
+Correctness-relevant details of the pipeline, for reviewers:
 
-1. **Breslow loss sign** (`cox.py`): `(-loss / n_events)` — the original returned positive
-   log-likelihood, causing gradient ascent instead of descent.
+1. **Cox loss sign** (`cox.py`): both losses return the *negative* partial
+   log-likelihood normalised by the number of events
+   (`-((log_h - lcs) * e).sum() / n_events`), so training minimises the correct
+   objective.
 
-2. **Efron correction ties** (`cox.py`): Correct per-tie fractional subtraction
-   `Σ_{j: tied} (j-1)/D_k · exp(η_j)` using the exact Efron formula.
+2. **Efron tie handling** (`cox.py`): `cox_loss_efron` uses the exact Efron
+   per-tie fractional denominator
+   `D_j = Σ_{at risk} exp(η) − (j/n_tied)·Σ_{tied} exp(η)`, which corrects the
+   Breslow overestimate of the risk set under the many integer-day ties in
+   Lung1. Efron is used for E10–E17; Breslow for E1–E9.
 
-3. **Age leakage** (`clinical.py`): `normalise_age_per_fold()` z-scores age using
-   *only* training fold statistics, called inside the CV loop.
+3. **No age leakage** (`clinical.py`): `normalise_age_per_fold()` z-scores age
+   using *only* training-fold statistics and is applied inside the CV loop.
 
-4. **Wilcoxon fold mismatch** (`metrics.py`): `wilcoxon_compare()` checks
-   `len(fci_a) == len(fci_b)` before running the test; returns `valid=False`
-   with explanation when COLIPRI (10-fold) vs E10 (5-fold) is attempted.
+4. **Wilcoxon fold-count guard** (`metrics.py`): `wilcoxon_compare()` checks
+   `len(fci_a) == len(fci_b)` before running, returning `valid=False` with an
+   explanation rather than silently comparing COLIPRI (10-fold) against the
+   5-fold CNN/clinical experiments.
 
-5. **Integrated Brier Score** (`metrics.py`): Replaced custom (buggy) IPCW
-   implementation with `sksurv.metrics.integrated_brier_score` (Graf 1999).
+5. **Integrated Brier Score** (`metrics.py`): uses
+   `sksurv.metrics.integrated_brier_score` (Graf 1999) rather than a hand-rolled
+   IPCW estimator.
 
-6. **ReLU inplace=False** (`cnn.py`, `colipri.py`): All activations use
-   `inplace=False` for GradCAM backward pass compatibility.
+6. **ReLU `inplace=False`** (`cnn.py`, `colipri.py`): all activations avoid
+   in-place ops so the stored pre-activations remain available for the GradCAM
+   backward pass.
 
 ---
 
-## Reproducibility Guarantee
+## Reproducibility
 
-Given identical:
-- TCIA Lung1 data
-- Environment (Python 3.11, exact pinned versions in `requirements.txt`)
-- Config file (`configs/default.yaml` with `training.seed: 123`)
+The pipeline fixes a global seed (`training.seed: 123`), seeds the DataLoader
+workers and generators, and saves the CV splits to `outputs/splits/` on the
+first run so that train/test assignment is identical on every subsequent run.
 
-Running `python scripts/train.py` followed by `python scripts/evaluate.py`
-will reproduce the reported OOF C-indices within ±0.001 (floating-point
-non-determinism from CuDNN).
-
-CV splits are saved to `outputs/splits/` at first run and reloaded on
-subsequent runs, guaranteeing identical train/test assignment.
+With identical data, the same pinned environment, and the same config, re-runs
+are closely reproducible. Note that exact OOF C-indices can still differ
+slightly between machines because of GPU non-determinism (CuDNN algorithm
+selection, non-deterministic atomic reductions), CUDA/cuDNN/PyTorch version
+differences, and CPU-vs-GPU execution. Treat small differences in the trailing
+decimals as expected rather than as a mismatch. For bit-wise determinism you
+would additionally need `torch.use_deterministic_algorithms(True)` and the
+corresponding CuDNN flags, at some cost to speed.
 
 ---
 
 ## Citation
 
 ```bibtex
-@mastersthesis{kirubel2024nsclc,
-  title  = {Deep Learning for NSCLC Survival Prediction from CT Radiomics},
-  author = {Kirubel, Biruk},
+@mastersthesis{shiferaw2026nsclc,
+  title  = {Prognostic Deep Learning for Non-Small Cell Lung Cancer:
+            Survival Prediction from 3D Thoracic Imaging},
+  author = {Shiferaw, Kirubel Biruk},
   school = {[University]},
-  year   = {2024},
-  note   = {Code: https://github.com/birukkirubel/nsclc-survival}
+  year   = {2026},
+  note   = {Code: https://github.com/kirubel-Biruk-Shiferaw/NSCLC-Survival_annotation_free-3DCT}
 }
 ```
 

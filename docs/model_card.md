@@ -119,17 +119,19 @@ here are therefore **not** affected by pretraining/test overlap.
 
 ## Trained Checkpoint Download
 
-Pre-trained checkpoints (E1–E17d, all folds) are available on Hugging Face Hub:
+Pre-trained checkpoints (E1–E17d, all folds) are **not yet published**. Once
+uploaded to the Hugging Face Hub, this section will give the exact repository
+id; the snippets below show the intended usage with a placeholder id.
 
 ```bash
 # Install huggingface_hub
 pip install huggingface_hub
 
-# Download all checkpoints (~2.1 GB)
+# Download all checkpoints (~2.1 GB)  — placeholder repo id, not yet published
 python - <<'EOF'
 from huggingface_hub import snapshot_download
 snapshot_download(
-    repo_id="birukkirubel/nsclc-survival-checkpoints",
+    repo_id="<your-hf-username>/nsclc-survival-checkpoints",
     local_dir="outputs/checkpoints",
     repo_type="model",
 )
@@ -140,26 +142,27 @@ Or download a single fold checkpoint:
 ```bash
 from huggingface_hub import hf_hub_download
 hf_hub_download(
-    repo_id="birukkirubel/nsclc-survival-checkpoints",
+    repo_id="<your-hf-username>/nsclc-survival-checkpoints",  # placeholder — not yet published
     filename="E17d_fold01.pt",
     local_dir="outputs/checkpoints",
 )
 ```
 
-> **Note**: Checkpoints are uploaded after thesis submission.
-> Until then, follow `README.md` to retrain from scratch (~6 hours on one GPU).
+> **Note**: Until checkpoints are uploaded, follow `README.md` to retrain from
+> scratch (~6 hours on one GPU).
 
 ---
 
 ## Citation
 
 ```bibtex
-@mastersthesis{kirubel2024nsclc,
-  title  = {Deep Learning for NSCLC Survival Prediction from CT Radiomics},
-  author = {Kirubel, Biruk},
+@mastersthesis{shiferaw2026nsclc,
+  title  = {Prognostic Deep Learning for Non-Small Cell Lung Cancer:
+            Survival Prediction from 3D Thoracic Imaging},
+  author = {Shiferaw, Kirubel Biruk},
   school = {[University]},
-  year   = {2024},
-  note   = {Code: https://github.com/birukkirubel/nsclc-survival}
+  year   = {2026},
+  note   = {Code: https://github.com/kirubel-Biruk-Shiferaw/NSCLC-Survival_annotation_free-3DCT}
 }
 ```
 
