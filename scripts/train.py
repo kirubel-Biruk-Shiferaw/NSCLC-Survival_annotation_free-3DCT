@@ -71,62 +71,64 @@ def get_experiment_registry(cfg, medicalnet_ckpt: str | None = None) -> dict:
     All paths come from cfg (loaded from default.yaml + env vars).
     """
     data_dir  = Path(cfg.data.artifact_dir)
-    vol_dir   = data_dir / "R2"
-    emb_dir   = data_dir / "colipri_embeddings"
+    vol_dir   = data_dir / "global_cache_128"              # {pid}_global.npy (64,128,128)
+    pool_dir  = data_dir / "colipri_nifti" / "pooled"      # {pid}.npy (768,)
+    patch_dir = data_dir / "colipri_nifti" / "patch"       # {pid}.npy (864,24,24,24)
 
-    ds_common = dict(vol_dir=vol_dir)
+    ds_common = dict(cache_dir=vol_dir)
 
+    # train_kwargs carry only the per-experiment protocol flags; all other
+    # hyperparameters (lr, epochs, patience, grad_accum, batch) default to the
+    # canonical CNN / COLIPRI values inside run_experiment unless set here.
     return {
         # ── CNN ablation (Breslow loss, 5-fold) ──────────────────────────────
-        "E1":  (CNNSurv_E1,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E2":  (CNNSurv_E2,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E3":  (CNNSurv_E3,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E4":  (CNNSurv_E4,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E5":  (CNNSurv_E5,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E6":  (CNNSurv_E6,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E7":  (CNNSurv_E7,  {},  DS_LungMasked,  ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E8":  (CNNSurv_E8,  {},  DS_HeavyAug,    ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E9":  (CNNSurv_E9,  {},  DS_Clinical,    ds_common,  {"loss_fn_name": "breslow", "n_epochs": cfg.training.n_epochs_cnn}),
+        "E1":  (CNNSurv_E1,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow"}),
+        "E2":  (CNNSurv_E2,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow"}),
+        "E3":  (CNNSurv_E3,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow"}),
+        "E4":  (CNNSurv_E4,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow"}),
+        "E5":  (CNNSurv_E5,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow"}),
+        "E6":  (CNNSurv_E6,  {},  DS_Base,        ds_common,  {"loss_fn_name": "breslow"}),
+        "E7":  (CNNSurv_E7,  {},  DS_LungMasked,  ds_common,  {"loss_fn_name": "breslow"}),
+        "E8":  (CNNSurv_E8,  {},  DS_HeavyAug,    ds_common,  {"loss_fn_name": "breslow"}),
+        "E9":  (CNNSurv_E9,  {},  DS_Clinical,    ds_common,  {"loss_fn_name": "breslow", "use_clinical": True}),
 
         # ── Clinical baselines (Efron loss, 5-fold) ───────────────────────────
-        "E10": (ClinicalMLP_E10, {}, DS_ClinicalOnly, {}, {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E11": (DeepSurv_E11,    {}, DS_ClinicalOnly, {}, {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_cnn}),
+        "E10": (ClinicalMLP_E10, {}, DS_ClinicalOnly, {}, {"loss_fn_name": "efron", "use_clinical": True}),
+        "E11": (DeepSurv_E11,    {}, DS_ClinicalOnly, {}, {"loss_fn_name": "efron", "use_clinical": True}),
 
         # ── Spatial correction (Efron, 5-fold) ──────────────────────────────
-        "E12": (CNNSurv_E12,      {}, DS_LungCrop_HU, ds_common, {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_cnn}),
-        "E13": (CNNSurv_MAAS_E13, {}, DS_MAAS,        ds_common, {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_cnn}),
+        "E12": (CNNSurv_E12,      {}, DS_LungCrop_HU, ds_common, {"loss_fn_name": "efron", "use_clinical": True}),
+        "E13": (CNNSurv_MAAS_E13, {}, DS_MAAS,        ds_common, {"loss_fn_name": "efron", "use_clinical": True}),
 
-        # ── MedicalNet pretrained (Efron, 5-fold) ─────────────────────────
+        # ── MedicalNet pretrained (Efron, 5-fold, 3-phase unfreeze) ─────────
         "E14": (MedicalNetSurv_E14,
                 {"ckpt_path": medicalnet_ckpt} if medicalnet_ckpt else {},
                 DS_Base, ds_common,
-                {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_medicalnet,
-                 "lr": cfg.training.lr_medicalnet}),
+                {"loss_fn_name": "efron", "use_clinical": False, "mednet_phases": True}),
         "E15": (MedicalNetSurv_E15,
                 {"ckpt_path": medicalnet_ckpt} if medicalnet_ckpt else {},
                 DS_LungCrop_HU, ds_common,
-                {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_medicalnet,
-                 "lr": cfg.training.lr_medicalnet}),
+                {"loss_fn_name": "efron", "use_clinical": False, "mednet_phases": True}),
 
-        # ── COLIPRI (Efron, 10-fold) ─────────────────────────────────────
+        # ── COLIPRI (Efron, 10-fold; pooled batch=32, patch batch=4) ────────
         "E16a": (COLIPRI_Pooled_MLP_E16a,      {}, DS_COLIPRI_Pooled,
-                 {"emb_dir": emb_dir},
-                 {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_colipri}),
+                 {"colipri_pool_dir": pool_dir},
+                 {"loss_fn_name": "efron", "is_colipri": True, "use_clinical": False, "batch_size": 32}),
         "E16b": (COLIPRI_Pooled_Clinical_E16b, {}, DS_COLIPRI_Pooled,
-                 {"emb_dir": emb_dir},
-                 {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_colipri}),
+                 {"colipri_pool_dir": pool_dir, "use_clin": True},
+                 {"loss_fn_name": "efron", "is_colipri": True, "use_clinical": True, "batch_size": 32}),
         "E17a": (COLIPRI_Patch_AttnPool_E17a,               {}, DS_COLIPRI_Patch,
-                 {"emb_dir": emb_dir},
-                 {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_colipri}),
+                 {"colipri_patch_dir": patch_dir},
+                 {"loss_fn_name": "efron", "is_colipri": True, "use_clinical": False, "batch_size": 4}),
         "E17b": (COLIPRI_Patch_Conv_GAP_E17b,               {}, DS_COLIPRI_Patch,
-                 {"emb_dir": emb_dir},
-                 {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_colipri}),
+                 {"colipri_patch_dir": patch_dir},
+                 {"loss_fn_name": "efron", "is_colipri": True, "use_clinical": False, "batch_size": 4}),
         "E17c": (COLIPRI_Patch_Conv_AttnPool_E17c,          {}, DS_COLIPRI_Patch,
-                 {"emb_dir": emb_dir},
-                 {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_colipri}),
+                 {"colipri_patch_dir": patch_dir},
+                 {"loss_fn_name": "efron", "is_colipri": True, "use_clinical": False, "batch_size": 4}),
         "E17d": (COLIPRI_Patch_Conv_AttnPool_Clinical_E17d, {}, DS_COLIPRI_Patch,
-                 {"emb_dir": emb_dir},
-                 {"loss_fn_name": "efron", "n_epochs": cfg.training.n_epochs_colipri}),
+                 {"colipri_patch_dir": patch_dir, "use_clin": True},
+                 {"loss_fn_name": "efron", "is_colipri": True, "use_clinical": True, "batch_size": 4}),
     }
 
 
@@ -199,12 +201,9 @@ def main():
             model_cls=model_cls,
             model_kwargs=model_kwargs,
             dataset_cls=dataset_cls,
-            dataset_kwargs={**ds_kwargs, "df_ref": df},
+            dataset_kwargs=ds_kwargs,
             df=df,
             splits=splits,
-            lr=cfg.training.lr,
-            weight_decay=cfg.training.weight_decay,
-            batch_size=cfg.training.batch_size,
             ckpt_dir=ckpt_dir,
             **train_kwargs,
         )

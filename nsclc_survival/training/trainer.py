@@ -1,27 +1,41 @@
 """
-Training loop utilities.
+Training loop and experiment runner (faithful port of the thesis protocol).
 
-Key design decisions
---------------------
-1. forward_model() dispatches batch keys → model keyword arguments via
-   **batch, so each dataset class (DS_Clinical, DS_MAAS, DS_COLIPRI_Patch, …)
-   only needs to return the keys its model expects — no if/else per experiment.
+Protocol (identical across CNN experiments E1–E15)
+--------------------------------------------------
+  - Optimiser : AdamW, lr=1.2e-3 (3e-4 x 4 linear-scaling), weight_decay=1e-2
+  - Schedule  : CosineAnnealingWarmRestarts, T_0=20, T_mult=2, eta_min=1e-6
+  - Grad accum: 4 physical steps (batch 8 -> effective batch 32) for CNNs
+  - Early stop: patience=20 on validation C-index (not on loss)
+  - Best ckpt : restored before test evaluation
 
-2. Age z-scoring is applied INSIDE the loop (normalise_age_per_fold) on every
-   fold, preventing leakage of test-set statistics into the training process.
+COLIPRI heads (E16a/b, E17a/b/c/d)
+----------------------------------
+  - lr=1e-3, up to 150 epochs, patience=30, grad_accum=1, no augmentation,
+    10-fold CV. Batch 32 for pooled heads, 4 for patch heads.
 
-3. MedicalNet (E14/E15) uses a 3-phase gradual-unfreeze schedule:
-     Phase 1: freeze backbone, train head for 10 epochs
-     Phase 2: unfreeze layer4+head for 20 epochs
-     Phase 3: unfreeze all for remaining epochs
+MedicalNet (E14/E15) 3-phase gradual unfreeze
+---------------------------------------------
+  Phase 1 (10 ep): freeze backbone, train head only
+  Phase 2 (20 ep): unfreeze layer4 + head
+  Phase 3 (rest) : unfreeze all; the optimiser/scheduler are rebuilt at each
+                   phase boundary over the newly trainable parameters.
 
-4. Checkpoints are saved at the end of every fold (not just the best validation
-   epoch) because we evaluate on OOF predictions, not a single held-out set.
+Inner CV split
+--------------
+  For each outer fold, the training pool is split 5:1 with
+  StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED), taking the
+  FIRST split. This inner split is fixed across experiments.
+
+Sign convention
+---------------
+  Models output log-hazard eta (higher = higher risk). concordance_index()
+  expects higher score = longer survival, so risks are negated: -eta.
 """
 
 from __future__ import annotations
 
-import json
+import copy
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,12 +43,29 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from lifelines.statistics import concordance_index
+from lifelines.utils import concordance_index
+from sklearn.model_selection import StratifiedKFold
 
 from ..utils.seed import set_seed, seed_worker, make_generator, SEED
 from ..data.clinical import normalise_age_per_fold
 from ..losses.cox import LOSS_REGISTRY
+
+# ── Canonical hyperparameters (thesis Section 2.7) ──────────────────────────
+CNN_LR            = 3e-4 * 4    # 1.2e-3, linear-scaling rule
+CNN_EPOCHS        = 100
+CNN_PATIENCE      = 20
+CNN_GRAD_ACCUM    = 4           # effective batch = 8 x 4 = 32
+CNN_BATCH_SIZE    = 8
+WEIGHT_DECAY      = 1e-2
+
+COLIPRI_LR        = 1e-3
+COLIPRI_EPOCHS    = 150
+COLIPRI_PATIENCE  = 30
+COLIPRI_BATCH     = 32          # patch heads override to 4
+
+MAX_GRAD_NORM     = 5.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -51,75 +82,61 @@ def _get_device() -> torch.device:
 
 def _batch_to_device(batch: dict, device: torch.device) -> dict:
     """Move all tensor values in a batch dict to device."""
-    return {
-        k: v.to(device) if isinstance(v, torch.Tensor) else v
-        for k, v in batch.items()
-    }
+    return {k: v.to(device) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Forward pass dispatcher
+# Forward-pass dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-def forward_model(model: nn.Module, batch: dict) -> torch.Tensor:
+def forward_model(
+    model:        nn.Module,
+    vol:          torch.Tensor = None,
+    clinical:     torch.Tensor = None,
+    patch:        torch.Tensor = None,
+    emb:          torch.Tensor = None,
+    r1:           torch.Tensor = None,
+    r2:           torch.Tensor = None,
+    r3:           torch.Tensor = None,
+    use_clinical: bool = False,
+) -> torch.Tensor:
     """
-    Call model(**batch_keys_that_model_accepts).
-
-    This works because all model forward() signatures use **kw to absorb
-    unused keys.  The batch dict may contain 'surv', 'event', 'pid' (metadata
-    only) alongside tensor inputs; these are ignored via **kw.
+    Route the forward pass to the correct model signature. All model forward()
+    methods accept **kw, so only the keys the model needs are supplied.
     """
-    return model(**batch)
+    kw: Dict[str, torch.Tensor] = {}
+    if vol   is not None: kw["vol"]   = vol
+    if patch is not None: kw["patch"] = patch
+    if emb   is not None: kw["emb"]   = emb
+    if r1    is not None: kw["r1"]    = r1
+    if r2    is not None: kw["r2"]    = r2
+    if r3    is not None: kw["r3"]    = r3
+    if use_clinical and clinical is not None:
+        kw["clinical"] = clinical
+    elif vol is None and patch is None and emb is None:
+        # Clinical-only model (E10/E11)
+        kw["clinical"] = clinical
+    return model(**kw)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Checkpoint I/O
-# ─────────────────────────────────────────────────────────────────────────────
-
-def save_checkpoint(
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    fold: int,
-    epoch: int,
-    oof_cindex: float,
-    out_dir: Path,
-    exp_name: str,
-) -> Path:
-    """Save model state + metadata to {out_dir}/{exp_name}_fold{fold}.pt."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{exp_name}_fold{fold:02d}.pt"
-    torch.save(
-        {
-            "model_state_dict":     model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "fold":       fold,
-            "epoch":      epoch,
-            "oof_cindex": oof_cindex,
-            "exp_name":   exp_name,
-        },
-        str(path),
-    )
-    return path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MedicalNet unfreeze schedule
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _apply_medicalnet_unfreeze(model: nn.Module, epoch: int) -> None:
-    """
-    3-phase gradual unfreezing for MedicalNetSurv_E14/E15.
-    Only called when model has freeze_backbone / unfreeze_layer4 / unfreeze_all.
-    """
-    if not hasattr(model, "freeze_backbone"):
-        return
-    if epoch == 0:
-        model.freeze_backbone()
-    elif epoch == 10:
-        model.unfreeze_layer4()
-    elif epoch == 30:
-        model.unfreeze_all()
+def _predict(model, loader, device, use_clinical):
+    """Return (risks, times, events) lists over a loader."""
+    risks, times, events = [], [], []
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            batch = _batch_to_device(batch, device)
+            log_h = forward_model(
+                model,
+                vol=batch.get("vol"), clinical=batch.get("clinical"),
+                patch=batch.get("patch"), emb=batch.get("emb"),
+                r1=batch.get("r1"), r2=batch.get("r2"), r3=batch.get("r3"),
+                use_clinical=use_clinical)
+            risks.extend(log_h.cpu().tolist())
+            times.extend(batch["t"].cpu().tolist())
+            events.extend(batch["e"].cpu().tolist())
+    return risks, times, events
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,83 +144,110 @@ def _apply_medicalnet_unfreeze(model: nn.Module, epoch: int) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_one_fold(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
+    model:          nn.Module,
+    train_loader:   DataLoader,
+    valid_loader:   DataLoader,
+    test_loader:    DataLoader,
     *,
-    n_epochs: int,
-    lr: float,
-    weight_decay: float,
-    loss_fn_name: str = "efron",
-    device: Optional[torch.device] = None,
-    verbose: bool = True,
-) -> Tuple[nn.Module, List[float]]:
+    use_clinical:   bool = False,
+    loss_fn_name:   str = "breslow",
+    num_epochs:     int = CNN_EPOCHS,
+    patience:       int = CNN_PATIENCE,
+    lr:             float = CNN_LR,
+    weight_decay:   float = WEIGHT_DECAY,
+    grad_accum:     int = CNN_GRAD_ACCUM,
+    phase_schedule: Optional[list] = None,
+    device:         Optional[torch.device] = None,
+) -> Tuple[float, float, int, dict, list, list, list]:
     """
-    Train model for n_epochs.  Returns trained model and per-epoch val C-index.
+    Train one CV fold with early stopping, restore the best-validation
+    checkpoint, and evaluate on the test fold.
 
-    Parameters
-    ----------
-    model        : uninitialised (or pretrained) PyTorch model
-    train_loader : DataLoader yielding batch dicts with 'surv' and 'event'
-    val_loader   : DataLoader for in-fold validation (not test)
-    loss_fn_name : 'breslow' or 'efron' (from LOSS_REGISTRY)
+    Returns
+    -------
+    (test_ci, best_val_ci, epochs_run, best_state, test_risks, test_times,
+     test_events)
     """
     if device is None:
         device = _get_device()
+    set_seed(SEED)
 
     model = model.to(device)
     loss_fn = LOSS_REGISTRY[loss_fn_name]
-    optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=lr, weight_decay=weight_decay)
 
-    val_cindices: List[float] = []
+    opt = AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                lr=lr, weight_decay=weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        opt, T_0=20, T_mult=2, eta_min=1e-6)
 
-    for epoch in range(n_epochs):
-        _apply_medicalnet_unfreeze(model, epoch)
+    best_val_ci = 0.0
+    best_state  = copy.deepcopy(model.state_dict())
+    no_improve  = 0
+    epochs_run  = 0
 
-        # ── Train ──────────────────────────────────────────────────────────
+    for epoch in range(1, num_epochs + 1):
+
+        # ── MedicalNet 3-phase gradual unfreeze ─────────────────────────────
+        if phase_schedule:
+            cumulative = 0
+            for n_ep, unfreeze_fn in phase_schedule:
+                if epoch == cumulative + 1 and unfreeze_fn is not None:
+                    unfreeze_fn()
+                    opt = AdamW(
+                        filter(lambda p: p.requires_grad, model.parameters()),
+                        lr=lr, weight_decay=weight_decay)
+                    sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                        opt, T_0=20, T_mult=2, eta_min=1e-6)
+                cumulative += n_ep
+
+        # ── Training ────────────────────────────────────────────────────────
         model.train()
-        epoch_loss = 0.0
-        for batch in train_loader:
+        opt.zero_grad()
+        for step, batch in enumerate(train_loader):
             batch = _batch_to_device(batch, device)
-            optimizer.zero_grad()
-            eta = forward_model(model, batch)
-            loss = loss_fn(eta, batch["surv"].float(), batch["event"].float())
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            optimizer.step()
-            epoch_loss += loss.item()
+            log_h = forward_model(
+                model,
+                vol=batch.get("vol"), clinical=batch.get("clinical"),
+                patch=batch.get("patch"), emb=batch.get("emb"),
+                r1=batch.get("r1"), r2=batch.get("r2"), r3=batch.get("r3"),
+                use_clinical=use_clinical)
+            loss = loss_fn(log_h, batch["t"], batch["e"].float())
+            # Scale by 1/grad_accum so the accumulated gradient matches a
+            # single large-batch step.
+            (loss / grad_accum).backward()
+            if (step + 1) % grad_accum == 0 or (step + 1) == len(train_loader):
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD_NORM)
+                opt.step()
+                opt.zero_grad()
+                sched.step()
 
-        # ── Validate ───────────────────────────────────────────────────────
-        model.eval()
-        etas, survs, events = [], [], []
-        with torch.no_grad():
-            for batch in val_loader:
-                batch = _batch_to_device(batch, device)
-                etas.append(forward_model(model, batch).cpu().numpy())
-                survs.append(batch["surv"].cpu().numpy())
-                events.append(batch["event"].cpu().numpy())
-
-        etas   = np.concatenate(etas)
-        survs  = np.concatenate(survs)
-        events = np.concatenate(events)
-
+        # ── Validation (early stop on C-index) ──────────────────────────────
+        v_risks, v_times, v_events = _predict(model, valid_loader, device, use_clinical)
         try:
-            ci = concordance_index(survs, -etas, events)
+            val_ci = concordance_index(v_times, [-r for r in v_risks], v_events)
         except Exception:
-            ci = 0.5
+            val_ci = 0.5
 
-        val_cindices.append(ci)
+        if val_ci > best_val_ci:
+            best_val_ci = val_ci
+            best_state  = copy.deepcopy(model.state_dict())
+            no_improve  = 0
+        else:
+            no_improve += 1
 
-        if verbose and (epoch + 1) % 10 == 0:
-            avg_loss = epoch_loss / max(len(train_loader), 1)
-            print(
-                f"    Epoch {epoch+1:3d}/{n_epochs}  "
-                f"loss={avg_loss:.4f}  val_CI={ci:.4f}"
-            )
+        epochs_run = epoch
+        if no_improve >= patience:
+            break
 
-    return model, val_cindices
+    # ── Test on the best checkpoint ─────────────────────────────────────────
+    model.load_state_dict(best_state)
+    t_risks, t_times, t_events = _predict(model, test_loader, device, use_clinical)
+    try:
+        test_ci = concordance_index(t_times, [-r for r in t_risks], t_events)
+    except Exception:
+        test_ci = 0.5
+
+    return test_ci, best_val_ci, epochs_run, best_state, t_risks, t_times, t_events
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,157 +255,153 @@ def train_one_fold(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_experiment(
-    exp_name: str,
+    exp_name:       str,
     model_cls,
-    model_kwargs: dict,
+    model_kwargs:   dict,
     dataset_cls,
     dataset_kwargs: dict,
     df,
-    splits: List[Tuple[np.ndarray, np.ndarray]],
+    splits:         List[Tuple[np.ndarray, np.ndarray]],
     *,
-    n_epochs: int = 50,
-    lr: float = 1e-3,
-    weight_decay: float = 1e-4,
-    batch_size: int = 32,
-    loss_fn_name: str = "efron",
-    ckpt_dir: Optional[Path] = None,
-    num_workers: int = 2,
-    verbose: bool = True,
+    use_clinical:   bool = False,
+    loss_fn_name:   str = "breslow",
+    is_colipri:     bool = False,
+    mednet_phases:  bool = False,
+    n_epochs:       Optional[int] = None,
+    patience:       Optional[int] = None,
+    lr:             Optional[float] = None,
+    weight_decay:   float = WEIGHT_DECAY,
+    grad_accum:     Optional[int] = None,
+    batch_size:     Optional[int] = None,
+    ckpt_dir:       Optional[Path] = None,
+    device:         Optional[torch.device] = None,
+    verbose:        bool = True,
+    **_ignored,
 ) -> Dict[str, Any]:
     """
-    Run one experiment across all folds, collecting OOF predictions.
+    Run one experiment across all folds and collect OOF predictions.
 
-    Parameters
-    ----------
-    exp_name     : identifier string, e.g. 'E2', 'E16a'
-    model_cls    : class (not instance) to instantiate per fold
-    model_kwargs : kwargs passed to model_cls()
-    dataset_cls  : Dataset class (not instance)
-    dataset_kwargs : static kwargs passed to dataset_cls(); 'df' is added per fold
-    df           : cohort DataFrame (from load_labels)
-    splits       : list of (tv_idx, test_idx)  — from make_splits()
-
-    Returns
-    -------
-    dict with keys: oof_eta, oof_surv, oof_event, oof_pid, fold_cindices,
-                    oof_cindex, elapsed_s, checkpoint_paths
+    Hyperparameters default to the canonical CNN values, or the COLIPRI values
+    when ``is_colipri=True``; any argument explicitly passed overrides them.
+    ``dataset_kwargs`` may contain a ``df_ref`` key (ignored here; datasets that
+    need it read it themselves).
     """
-    device = _get_device()
-    set_seed(SEED)
+    device = device or _get_device()
 
-    oof_eta    = np.zeros(len(df))
-    oof_surv   = np.zeros(len(df))
-    oof_event  = np.zeros(len(df))
-    oof_pid    = [""] * len(df)
-    fold_ci    = []
-    ckpt_paths = []
+    # Canonical hyperparameter resolution
+    n_epochs   = n_epochs   or (COLIPRI_EPOCHS   if is_colipri else CNN_EPOCHS)
+    patience   = patience   or (COLIPRI_PATIENCE if is_colipri else CNN_PATIENCE)
+    lr         = lr         or (COLIPRI_LR       if is_colipri else CNN_LR)
+    grad_accum = grad_accum or (1               if is_colipri else CNN_GRAD_ACCUM)
+    batch_size = batch_size or (COLIPRI_BATCH    if is_colipri else CNN_BATCH_SIZE)
+    augment    = not is_colipri       # CNN experiments use augmentation
+
+    set_seed(SEED)
+    inner_skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+
+    oof_eta   = np.zeros(len(df))
+    oof_surv  = np.zeros(len(df))
+    oof_event = np.zeros(len(df))
+    fold_ci: List[float] = []
+    ckpt_paths: List[str] = []
+
+    n_params = sum(p.numel() for p in model_cls(**model_kwargs).parameters())
+    if verbose:
+        print(f"\n{'='*70}\n  {exp_name}  "
+              f"params={n_params:,}  folds={len(splits)}  loss={loss_fn_name}"
+              f"\n{'='*70}")
 
     t0 = time.time()
 
-    for fold_idx, (tv_idx, test_idx) in enumerate(splits):
-        if verbose:
-            print(f"\n  {exp_name} fold {fold_idx+1}/{len(splits)}")
+    for fn, (tv_idx, test_idx) in enumerate(splits, start=1):
+        tv_idx   = np.asarray(tv_idx)
+        test_idx = np.asarray(test_idx)
 
-        set_seed(SEED + fold_idx)     # deterministic per fold
+        # Inner split — fixed FIRST stratified split of the training pool
+        tr_s, va_s = next(inner_skf.split(df.iloc[tv_idx],
+                                          df.iloc[tv_idx]["status"].values))
+        train_idx = tv_idx[tr_s]
+        valid_idx = tv_idx[va_s]
 
-        # Age z-score on training fold only
-        df_fold = normalise_age_per_fold(df, tv_idx)
+        # Age z-score using ONLY training statistics (no leakage)
+        df_fold = normalise_age_per_fold(df, train_idx)
 
-        # Train/val split (80/20 of tv_idx)
-        rng      = np.random.default_rng(SEED + fold_idx)
-        perm     = rng.permutation(len(tv_idx))
-        n_val    = max(1, int(len(tv_idx) * 0.2))
-        val_pos  = perm[:n_val]
-        train_pos = perm[n_val:]
-        train_idx = tv_idx[train_pos]
-        val_idx   = tv_idx[val_pos]
-
-        # Build datasets
-        ds_train = dataset_cls(df=df_fold, indices=train_idx,
-                               augment=True, **dataset_kwargs)
-        ds_val   = dataset_cls(df=df_fold, indices=val_idx,
-                               augment=False, **dataset_kwargs)
-        ds_test  = dataset_cls(df=df_fold, indices=test_idx,
-                               augment=False, **dataset_kwargs)
+        tr_ds = dataset_cls(df_fold, train_idx, augment=augment, **dataset_kwargs)
+        va_ds = dataset_cls(df_fold, valid_idx, augment=False,   **dataset_kwargs)
+        te_ds = dataset_cls(df_fold, test_idx,  augment=False,   **dataset_kwargs)
 
         g = make_generator()
-        train_loader = DataLoader(
-            ds_train, batch_size=batch_size, shuffle=True,
-            num_workers=num_workers, worker_init_fn=seed_worker,
-            generator=g, pin_memory=(device.type == "cuda"))
-        val_loader = DataLoader(
-            ds_val, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, pin_memory=(device.type == "cuda"))
-        test_loader = DataLoader(
-            ds_test, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, pin_memory=(device.type == "cuda"))
+        tr_dl = DataLoader(tr_ds, batch_size=batch_size, shuffle=True,
+                           num_workers=0, drop_last=True,
+                           generator=g, worker_init_fn=seed_worker)
+        va_dl = DataLoader(va_ds, batch_size=batch_size * 2, shuffle=False,
+                           num_workers=0)
+        te_dl = DataLoader(te_ds, batch_size=batch_size * 2, shuffle=False,
+                           num_workers=0)
 
-        # Model
-        model = model_cls(**model_kwargs)
+        # Fresh model each fold; set_seed for identical initialisation
+        model = model_cls(**model_kwargs).to(device)
+        set_seed(SEED)
 
-        # Train
-        model, _ = train_one_fold(
-            model, train_loader, val_loader,
-            n_epochs=n_epochs, lr=lr, weight_decay=weight_decay,
-            loss_fn_name=loss_fn_name, device=device, verbose=verbose)
+        # MedicalNet 3-phase schedule
+        phases = None
+        if mednet_phases:
+            phases = [
+                (10,              None),                  # Phase 1: frozen
+                (20,              model.unfreeze_layer4),  # Phase 2: layer4
+                (n_epochs - 30,   model.unfreeze_all),     # Phase 3: all
+            ]
+            model.freeze_backbone()
 
-        # OOF inference
-        model.eval()
-        etas_fold, survs_fold, events_fold, pids_fold = [], [], [], []
-        with torch.no_grad():
-            for batch in test_loader:
-                batch_dev = _batch_to_device(batch, device)
-                eta = forward_model(model, batch_dev).cpu().numpy()
-                etas_fold.append(eta)
-                survs_fold.append(batch["surv"].numpy())
-                events_fold.append(batch["event"].numpy())
-                if "pid" in batch:
-                    pids_fold.extend(batch["pid"])
+        (test_ci, best_val_ci, n_ep, best_state,
+         t_risks, t_times, t_events) = train_one_fold(
+            model, tr_dl, va_dl, te_dl,
+            use_clinical=use_clinical, loss_fn_name=loss_fn_name,
+            num_epochs=n_epochs, patience=patience, lr=lr,
+            weight_decay=weight_decay, grad_accum=grad_accum,
+            phase_schedule=phases, device=device)
 
-        etas_fold   = np.concatenate(etas_fold)
-        survs_fold  = np.concatenate(survs_fold)
-        events_fold = np.concatenate(events_fold)
-
-        oof_eta[test_idx]   = etas_fold
-        oof_surv[test_idx]  = survs_fold
-        oof_event[test_idx] = events_fold
-        if pids_fold:
-            for pos, pid in zip(test_idx, pids_fold):
-                oof_pid[pos] = pid
-
-        try:
-            ci = concordance_index(survs_fold, -etas_fold, events_fold)
-        except Exception:
-            ci = 0.5
-        fold_ci.append(ci)
+        fold_ci.append(test_ci)
+        oof_eta[test_idx]   = t_risks
+        oof_surv[test_idx]  = t_times
+        oof_event[test_idx] = t_events
 
         if verbose:
-            print(f"    Fold {fold_idx+1} test C-index: {ci:.4f}")
+            print(f"  Fold {fn}/{len(splits)}: test_CI={test_ci:.4f}  "
+                  f"best_val_CI={best_val_ci:.4f}  epochs={n_ep}")
 
-        # Save checkpoint
         if ckpt_dir is not None:
-            ckpt_path = save_checkpoint(
-                model, torch.optim.Adam(model.parameters()),  # re-use signature
-                fold_idx + 1, n_epochs, ci, ckpt_dir, exp_name)
+            ckpt_dir = Path(ckpt_dir)
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = ckpt_dir / f"{exp_name}_fold{fn:02d}.pt"
+            torch.save({
+                "model_state_dict": best_state,
+                "fold": fn, "epoch": n_ep,
+                "test_cindex": test_ci, "val_cindex": best_val_ci,
+                "exp_name": exp_name, "model_cls": model_cls.__name__,
+                "model_kwargs": model_kwargs,
+            }, str(ckpt_path))
             ckpt_paths.append(str(ckpt_path))
 
     elapsed = time.time() - t0
     oof_ci  = concordance_index(oof_surv, -oof_eta, oof_event)
 
     if verbose:
-        print(
-            f"\n  {exp_name} OOF C-index: {oof_ci:.4f}  "
-            f"(mean fold: {np.mean(fold_ci):.4f} ± {np.std(fold_ci):.4f})  "
-            f"elapsed: {elapsed/60:.1f} min"
-        )
+        print(f"\n  {exp_name} COMPLETE: OOF C-index={oof_ci:.4f}  "
+              f"(mean fold {np.mean(fold_ci):.4f} +/- {np.std(fold_ci):.4f})  "
+              f"elapsed {elapsed/60:.1f} min")
+        print(f"  Per-fold: {[f'{c:.4f}' for c in fold_ci]}")
 
     return {
+        "exp":              exp_name,
         "oof_eta":          oof_eta,
         "oof_surv":         oof_surv,
         "oof_event":        oof_event,
-        "oof_pid":          oof_pid,
         "fold_cindices":    fold_ci,
-        "oof_cindex":       oof_ci,
+        "mean_ci":          float(np.mean(fold_ci)),
+        "std_ci":           float(np.std(fold_ci)),
+        "oof_cindex":       float(oof_ci),
+        "n_params":         int(n_params),
         "elapsed_s":        elapsed,
         "checkpoint_paths": ckpt_paths,
     }

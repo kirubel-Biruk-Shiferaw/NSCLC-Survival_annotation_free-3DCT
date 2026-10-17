@@ -389,9 +389,11 @@ class DS_COLIPRI_Pooled(Dataset):
     All 422 embeddings (~2.5 MB total) are preloaded into RAM.
     E16b additionally provides 16-dim clinical features.
 
-    CAUTION: COLIPRI was pretrained on chest CT + radiology report pairs.
-    Some Lung 1 patients may overlap with COLIPRI pretraining data.
-    Treat results as suggestive; external validation is required.
+    NOTE: COLIPRI was pretrained on CT-RATE (CT + radiology-report pairs) and
+    NLST (image-only). Neither corpus includes the NSCLC-Radiomics / Lung1
+    cohort (MAASTRO/TCIA), so there is no pretraining/test overlap here.
+    Domain shift and single-site evaluation still apply; external validation
+    on an independent cohort remains necessary.
     """
 
     _cache: dict = {}
