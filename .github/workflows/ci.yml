@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install flake8
+        run: pip install flake8
+      - name: Lint
+        run: |
+          flake8 nsclc_survival/ scripts/ tests/ \
+            --max-line-length=100 \
+            --extend-ignore=E501,W503,E203 \
+            --exclude=__pycache__
+
+  unit-tests:
+    name: Unit tests (CPU, no data)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install CPU-only dependencies
+        run: |
+          pip install --upgrade pip
+          # CPU torch first (avoids downloading CUDA builds in CI)
+          pip install torch==2.2.2+cpu torchvision==0.17.2+cpu \
+              --index-url https://download.pytorch.org/whl/cpu
+          # Remaining packages (no GPU extras needed)
+          pip install \
+              nibabel==5.2.1 \
+              scikit-image==0.22.0 \
+              lifelines==0.29.0 \
+              scikit-survival==0.22.2 \
+              numpy==1.26.4 \
+              scipy==1.13.0 \
+              pandas==2.2.1 \
+              scikit-learn==1.4.2 \
+              pyyaml==6.0.1 \
+              pytest==7.4.4 \
+              pytest-cov==4.1.0
+
+      - name: Install package (editable)
+        run: pip install -e . --no-deps
+
+      - name: Run unit tests
+        run: |
+          pytest tests/ \
+            -v \
+            --tb=short \
+            --cov=nsclc_survival \
+            --cov-report=term-missing \
+            -x
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage

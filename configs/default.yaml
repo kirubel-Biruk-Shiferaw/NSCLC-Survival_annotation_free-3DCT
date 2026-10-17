@@ -1,0 +1,91 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NSCLC Survival — Default Configuration
+# Override paths with environment variables:
+#   NSCLC_ARTIFACT_DIR  — root of preprocessed data (R2 cache, NIfTI, COLIPRI)
+#   NSCLC_OUTPUT_DIR    — root for models, results, figures
+# ─────────────────────────────────────────────────────────────────────────────
+
+data:
+  # Paths — may be overridden by $NSCLC_ARTIFACT_DIR/<subdir>
+  artifact_dir: "data/artifacts"          # set via env var or here
+  label_csv:    "data/artifacts/clinical_data.csv"
+  r2_cache:     "data/artifacts/global_cache_128"   # {pid}_global.npy  (64,128,128) float32
+  nifti_dir:    "data/artifacts/nifti_ct_rtstruct"  # {pid}_ct.nii.gz, {pid}_mask.nii.gz
+  colipri_pool: "data/artifacts/colipri_nifti/pooled"   # {pid}.npy  (768,)
+  colipri_patch:"data/artifacts/colipri_nifti/patch"    # {pid}.npy  (864,24,24,24)
+  mednet_dir:   "data/artifacts/medicalnet"
+  mednet_ckpt:  "data/artifacts/medicalnet/resnet_10.pth"
+
+  # Volume shape after R2 resampling (~4mm isotropic)
+  vol_shape: [64, 128, 128]   # D × H × W
+
+  # 16-dim clinical feature vector
+  feature_cols:
+    - age_z
+    - t1
+    - t2
+    - t3
+    - t4
+    - n0
+    - n1
+    - n2
+    - n3
+    - m0
+    - m1
+    - hist_squamous
+    - hist_adenocarcinoma
+    - hist_large_cell
+    - hist_nos
+    - gender_male
+
+output:
+  model_dir:   "outputs/models"
+  results_dir: "outputs/results"
+  fig_dir:     "outputs/figures"
+  ckpt_dir:    "outputs/checkpoints"
+
+training:
+  seed: 123                    # fixed globally; controls Python/NumPy/PyTorch/CUDA
+
+  # CNN experiments (E1–E15): 5-fold CV
+  n_folds_cnn:       5
+  batch_size:        8
+  grad_accum_steps:  4          # effective batch = 8 × 4 = 32
+  lr:                1.2e-3     # = 3e-4 × accum (linear scaling rule)
+  weight_decay:      1.0e-2
+  num_epochs:        100
+  patience:          20         # early stopping on validation C-index
+
+  # COLIPRI experiments (E16–E17): 10-fold CV
+  n_folds_colipri:   10
+  colipri_lr:        1.0e-3
+  colipri_epochs:    150
+  colipri_patience:  30
+  colipri_batch:     32
+
+  # MedicalNet 3-phase fine-tuning schedule (phases sum ≤ num_epochs)
+  mednet_phase1_epochs: 10     # freeze backbone, train head only
+  mednet_phase2_epochs: 20     # unfreeze layer4 + head
+  # phase 3: remaining epochs — unfreeze all
+
+evaluation:
+  bootstrap_n_resamples: 2000  # for 95% CI via percentile bootstrap
+  bootstrap_seed: 123
+  key_exps_for_ci:             # experiments for which bootstrap CIs are printed
+    - E2
+    - E10
+    - E12
+    - E16a
+    - E17d
+  brier_t_min_percentile: 10   # IBS integration range: 10th–90th percentile
+  brier_t_max_percentile: 90   # of event times (avoids extrapolation)
+
+sota:
+  # External benchmarks for contextualisation only
+  # Paolo et al. 2026: annotation-free, 10-fold CV, n=422
+  paolo_2026_ci: 0.584
+  paolo_2026_ci_std: 0.054
+  # Nguyen/TMAE 2024: masked autoencoder, held-out split, n=422
+  nguyen_2024_ci: 0.612
+  # NOTE: COLIPRI results should be interpreted with caution — possible
+  # pretraining data overlap with Lung 1 patients. External validation required.

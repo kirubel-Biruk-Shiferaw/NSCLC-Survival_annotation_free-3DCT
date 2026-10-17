@@ -1,0 +1,31 @@
+# NSCLC Survival Prediction — pinned dependencies
+# Python 3.10+ recommended; tested on 3.10.12
+
+# ── Deep learning ──────────────────────────────────────────────────────────────
+torch==2.2.2
+torchvision==0.17.2
+
+# ── Medical imaging ────────────────────────────────────────────────────────────
+nibabel==5.2.1
+scikit-image==0.22.0
+
+# ── Survival analysis ──────────────────────────────────────────────────────────
+lifelines==0.29.0
+scikit-survival==0.22.2
+
+# ── Scientific computing ───────────────────────────────────────────────────────
+numpy==1.26.4
+scipy==1.13.0
+pandas==2.2.1
+scikit-learn==1.4.2
+
+# ── Hugging Face (COLIPRI encoder download) ────────────────────────────────────
+huggingface_hub==0.22.2
+transformers==4.40.0
+
+# ── Visualisation ──────────────────────────────────────────────────────────────
+matplotlib==3.8.4
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+tqdm==4.66.2
+pyyaml==6.0.1
