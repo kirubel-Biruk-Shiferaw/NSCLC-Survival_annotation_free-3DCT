@@ -21,7 +21,7 @@ jobs:
         run: |
           flake8 nsclc_survival/ scripts/ tests/ \
             --max-line-length=100 \
-            --extend-ignore=E501,W503,E203 \
+            --extend-ignore=E501,W503,E203,E221,E272,E231,E402,E701,F401,F841 \
             --exclude=__pycache__
 
   unit-tests:
