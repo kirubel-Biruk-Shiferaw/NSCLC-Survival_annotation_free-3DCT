@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from lifelines import concordance_index
+from lifelines.utils import concordance_index
 from scipy.stats import wilcoxon as scipy_wilcoxon
 
 try:
