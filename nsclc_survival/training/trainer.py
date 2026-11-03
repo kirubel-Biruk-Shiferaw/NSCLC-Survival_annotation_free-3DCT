@@ -12,8 +12,7 @@ Protocol (identical across CNN experiments E1–E15)
 COLIPRI heads (E16a/b, E17a/b/c/d)
 ----------------------------------
   - lr=1e-3, up to 150 epochs, patience=30, grad_accum=1, no augmentation,
-    5-fold CV (same as CNN experiments). Batch 32 for pooled heads, 4 for
-    patch heads.
+    10-fold CV. Batch 32 for pooled heads, 4 for patch heads.
 
 MedicalNet (E14/E15) 3-phase gradual unfreeze
 ---------------------------------------------

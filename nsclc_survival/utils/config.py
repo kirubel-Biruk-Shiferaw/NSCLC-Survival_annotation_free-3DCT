@@ -68,7 +68,7 @@ class TrainingConfig:
     weight_decay: float = 1e-2
     num_epochs: int = 100
     patience: int = 20
-    n_folds_colipri: int = 5
+    n_folds_colipri: int = 10
     colipri_lr: float = 1e-3
     colipri_epochs: int = 150
     colipri_patience: int = 30

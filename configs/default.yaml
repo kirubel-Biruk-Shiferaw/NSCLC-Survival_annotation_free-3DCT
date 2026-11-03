@@ -56,8 +56,8 @@ training:
   num_epochs:        100
   patience:          20         # early stopping on validation C-index
 
-  # COLIPRI experiments (E16–E17): 5-fold CV (same as CNN experiments)
-  n_folds_colipri:   5
+  # COLIPRI experiments (E16–E17): 10-fold CV
+  n_folds_colipri:   10
   colipri_lr:        1.0e-3
   colipri_epochs:    150
   colipri_patience:  30
