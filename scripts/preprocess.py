@@ -55,11 +55,13 @@ import numpy as np
 # ── Volume constants (must match configs/default.yaml) ────────────────────────
 VOL_SHAPE = (64, 128, 128)          # D × H × W after R2 resampling
 HU_MIN    = -1000.0                 # clip low  → 0
-HU_MAX    =  400.0                  # clip high → 1
+HU_MAX    = 400.0                   # clip high → 1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1 helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _dicom_to_volume(dicom_dir: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
     """
@@ -181,7 +183,7 @@ def stage_ct(dicom_root: Path, artifact_dir: Path) -> None:
             f"or flat NIfTI:       {dicom_root}/LUNG1-001.nii.gz"
         )
 
-    print(f"\nStage 1 — CT preprocessing")
+    print("\nStage 1 — CT preprocessing")
     print(f"  Source : {dicom_root}  ({len(pid_dirs)} patients)")
     print(f"  Output : {cache_dir}")
     print(f"  Shape  : {VOL_SHAPE}  (D×H×W)  float32  HU→[0,1]")
@@ -250,7 +252,7 @@ def stage_colipri(artifact_dir: Path, hf_token: str | None, batch_size: int, dev
     if not npy_files:
         sys.exit(f"No *_global.npy files found in {cache_dir}. Run --stage ct first.")
 
-    print(f"\nStage 2 — COLIPRI embedding extraction")
+    print("\nStage 2 — COLIPRI embedding extraction")
     print(f"  Source : {cache_dir}  ({len(npy_files)} volumes)")
     print(f"  Pool   : {pool_dir}")
     print(f"  Patch  : {patch_dir}")
@@ -308,7 +310,7 @@ def stage_colipri(artifact_dir: Path, hf_token: str | None, batch_size: int, dev
             # last_hidden_state: (1, 1 + n_patches, 768)
             hs = outputs.last_hidden_state.squeeze(0)       # (1+n_patches, 768)
             pooled  = hs[0].cpu().numpy().astype(np.float32)     # (768,)
-            patches_flat = hs[1:].cpu().numpy().astype(np.float32) # (n_patches, 768)
+            patches_flat = hs[1:].cpu().numpy().astype(np.float32)  # (n_patches, 768)
 
             # Reshape patch tokens: COLIPRI uses a 4×6×6 patch grid over
             # the 64×128×128 volume → 864 patches of 16×16×16 voxels each.
