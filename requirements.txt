@@ -8,6 +8,7 @@ torchvision==0.17.2
 # ── Medical imaging ────────────────────────────────────────────────────────────
 nibabel==5.2.1
 scikit-image==0.22.0
+SimpleITK==2.3.1            # DICOM series reading in scripts/preprocess.py
 
 # ── Survival analysis ──────────────────────────────────────────────────────────
 lifelines==0.29.0
@@ -29,3 +30,4 @@ matplotlib==3.8.4
 # ── Utilities ──────────────────────────────────────────────────────────────────
 tqdm==4.66.2
 pyyaml==6.0.1
+tcia_utils==2.5.3           # TCIA data download helper (optional; used in README)
