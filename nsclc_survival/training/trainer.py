@@ -12,7 +12,8 @@ Protocol (identical across CNN experiments E1–E15)
 COLIPRI heads (E16a/b, E17a/b/c/d)
 ----------------------------------
   - lr=1e-3, up to 150 epochs, patience=30, grad_accum=1, no augmentation,
-    10-fold CV. Batch 32 for pooled heads, 4 for patch heads.
+    5-fold CV (same as CNN experiments). Batch 32 for pooled heads, 4 for
+    patch heads.
 
 MedicalNet (E14/E15) 3-phase gradual unfreeze
 ---------------------------------------------
@@ -219,7 +220,9 @@ def train_one_fold(
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD_NORM)
                 opt.step()
                 opt.zero_grad()
-                sched.step()
+
+        # Step LR scheduler once per epoch (T_0=20 means 20 epochs, not steps)
+        sched.step()
 
         # ── Validation (early stop on C-index) ──────────────────────────────
         v_risks, v_times, v_events = _predict(model, valid_loader, device, use_clinical)
@@ -339,9 +342,8 @@ def run_experiment(
         te_dl = DataLoader(te_ds, batch_size=batch_size * 2, shuffle=False,
                            num_workers=0)
 
-        # Fresh model each fold; set_seed for identical initialisation
+        # Fresh model each fold
         model = model_cls(**model_kwargs).to(device)
-        set_seed(SEED)
 
         # MedicalNet 3-phase schedule
         phases = None

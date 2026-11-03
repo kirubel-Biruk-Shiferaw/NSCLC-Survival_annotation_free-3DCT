@@ -9,6 +9,7 @@ Tests
 4. Sign check: negating log-hazard flips the loss (risk ordering).
 5. Breslow and Efron agree when there are no tied event times.
 6. Loss is differentiable (autograd check).
+7. Both losses are finite on tied data (directional comparison is data-dependent).
 """
 
 import math
@@ -169,12 +170,11 @@ class TestEfronLoss:
         e = cox_loss_efron(eta,  surv, ev).item()
         assert abs(b - e) > 1e-6, "Efron and Breslow should differ with ties"
 
-    def test_tied_loss_lower_than_breslow(self):
-        """Efron corrects for over-estimation by Breslow; should give lower loss on tied data."""
+    def test_both_finite_with_ties(self):
+        """Both losses should be finite on tied data."""
         eta  = torch.tensor([1.0, 0.5, -0.5, 0.0])
         surv = torch.tensor([2.0, 2.0,  3.0, 3.0])
         ev   = torch.ones(4)
         b = cox_loss_breslow(eta, surv, ev).item()
         e = cox_loss_efron(eta,  surv, ev).item()
-        # Efron does not always give lower loss — just different; test only finiteness
         assert math.isfinite(b) and math.isfinite(e)

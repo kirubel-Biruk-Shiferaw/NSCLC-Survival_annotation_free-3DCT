@@ -109,7 +109,7 @@ def cox_loss_efron(
     if len(utimes) == 0:
         return torch.tensor(0.0, requires_grad=True, device=log_h.device)
 
-    loss = torch.tensor(0.0, device=log_h.device, dtype=torch.float32)
+    terms: list = []
     n_ev = 0
 
     for ti in utimes:
@@ -123,10 +123,12 @@ def cox_loss_efron(
         tied_lh  = log_h[tied].sum()
         for j in range(n_tied):
             denom = risk_exp - (j / n_tied) * tied_exp + eps
-            loss  = loss - tied_lh / n_tied + torch.log(denom)
+            # Each term: log-hazard contribution minus log denominator
+            terms.append(tied_lh / n_tied - torch.log(denom))
         n_ev += n_tied
 
-    return loss / max(n_ev, 1)
+    # Stack into a single tensor so the gradient graph is clean
+    return -torch.stack(terms).sum() / max(n_ev, 1)
 
 
 LOSS_REGISTRY = {

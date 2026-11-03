@@ -54,7 +54,7 @@ class COLIPRI_Pooled_MLP_E16a(nn.Module):
         super().__init__()
         self.head = nn.Sequential(
             nn.Linear(emb_dim, hidden), nn.BatchNorm1d(hidden),
-            nn.ReLU(inplace=True), nn.Dropout(dropout),
+            nn.ReLU(inplace=False), nn.Dropout(dropout),
             nn.Linear(hidden, 1))
         nn.init.normal_(self.head[-1].weight, 0.0, 0.01)
         nn.init.zeros_(self.head[-1].bias)
@@ -78,7 +78,7 @@ class COLIPRI_Pooled_Clinical_E16b(nn.Module):
         super().__init__()
         self.img = nn.Sequential(
             nn.Linear(emb_dim, hidden), nn.BatchNorm1d(hidden),
-            nn.ReLU(inplace=True), nn.Dropout(dropout))
+            nn.ReLU(inplace=False), nn.Dropout(dropout))
         self.clin = nn.Sequential(
             nn.Linear(n_clinical, 64), nn.ReLU(inplace=False), nn.Dropout(0.2),
             nn.Linear(64, 16), nn.ReLU(inplace=False))
@@ -137,7 +137,7 @@ class COLIPRI_Patch_Conv_GAP_E17b(nn.Module):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv3d(in_ch, mid, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm3d(mid), nn.ReLU(inplace=True))
+            nn.BatchNorm3d(mid), nn.ReLU(inplace=False))
         self.pool = nn.AdaptiveAvgPool3d(1)
         self.drop = nn.Dropout(dropout)
         self.head = nn.Linear(mid, 1)
@@ -163,7 +163,7 @@ class COLIPRI_Patch_Conv_AttnPool_E17c(nn.Module):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv3d(in_ch, mid, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm3d(mid), nn.ReLU(inplace=True))
+            nn.BatchNorm3d(mid), nn.ReLU(inplace=False))
         self.pool = AttentionPool3d(mid)
         self.drop = nn.Dropout(dropout)
         self.head = nn.Linear(mid, 1)
@@ -192,7 +192,7 @@ class COLIPRI_Patch_Conv_AttnPool_Clinical_E17d(nn.Module):
         super().__init__()
         self.conv = nn.Sequential(
             nn.Conv3d(in_ch, mid, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm3d(mid), nn.ReLU(inplace=True))
+            nn.BatchNorm3d(mid), nn.ReLU(inplace=False))
         self.pool = AttentionPool3d(mid)
         self.drop = nn.Dropout(dropout)
         self.clin = nn.Sequential(

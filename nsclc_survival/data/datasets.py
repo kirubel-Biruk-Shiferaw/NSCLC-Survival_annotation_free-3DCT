@@ -456,7 +456,10 @@ class DS_COLIPRI_Patch(Dataset):
     Total RAM footprint: 422 × 864 × 24³ × 4 bytes ≈ 22.8 GB.
     Set preload=True only if system RAM > 25 GB; otherwise loads on-demand.
 
-    Augmentation flips operate in 24³ patch space (not native CT coords).
+    Note: augmentation is not applied to COLIPRI patch embeddings because the
+    embeddings are pre-computed from the frozen COLIPRI encoder; augmenting in
+    patch space would corrupt the semantic structure of the representation.
+    The trainer always passes augment=False for COLIPRI experiments.
     """
 
     _cache: dict = {}
@@ -466,13 +469,12 @@ class DS_COLIPRI_Patch(Dataset):
         df: pd.DataFrame,
         indices: np.ndarray,
         colipri_patch_dir: str | Path,
-        augment: bool = False,
+        augment: bool = False,  # always False for COLIPRI; kept for API compat
         use_clin: bool = False,
         preload: bool = True,
         **kw,
     ):
         self.df                = df.iloc[indices].reset_index(drop=True)
-        self.augment           = augment
         self.use_clin          = use_clin
         self.colipri_patch_dir = Path(colipri_patch_dir)
 
@@ -502,13 +504,6 @@ class DS_COLIPRI_Patch(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def _augment(self, patch: np.ndarray) -> np.ndarray:
-        """Random flip in 24³ spatial dims (dims 1, 2, 3 of the tensor)."""
-        if np.random.rand() > 0.5: patch = patch[:, ::-1, :, :].copy()
-        if np.random.rand() > 0.5: patch = patch[:, :, ::-1, :].copy()
-        if np.random.rand() > 0.5: patch = patch[:, :, :, ::-1].copy()
-        return patch
-
     def __getitem__(self, idx: int) -> dict:
         row = self.df.iloc[idx]
         pid = row["PatientID"]
@@ -519,9 +514,6 @@ class DS_COLIPRI_Patch(Dataset):
             patch = np.load(
                 str(self.colipri_patch_dir / f"{pid}.npy")
             ).astype(np.float32)
-
-        if self.augment:
-            patch = self._augment(patch)
 
         item = {
             "patch": torch.from_numpy(patch),
